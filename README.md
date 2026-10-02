@@ -47,6 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/DarkAaronfox/kreta-tui/main/install
 kreta            # log in, then browse your data
 kreta --demo     # made-up data, no login needed
 kreta --logout   # forget the saved session and cache
+kreta --debug-login   # password login with a step-by-step trace (no password/tokens printed)
 ```
 
 ### Logging in

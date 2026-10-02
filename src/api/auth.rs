@@ -125,16 +125,52 @@ fn random_token(len: usize) -> String {
     URL_SAFE_NO_PAD.encode(buf)
 }
 
-/// Client that stops at the OAuth redirect instead of trying to load it.
+/// Login client that never follows redirects on its own: `follow` walks them
+/// so every hop can be traced and the OAuth redirect is never requested.
 fn login_client() -> Result<reqwest::Client> {
-    let policy = reqwest::redirect::Policy::custom(|attempt| {
-        if attempt.url().as_str().starts_with(REDIRECT_URI) || attempt.previous().len() > 10 {
-            attempt.stop()
-        } else {
-            attempt.follow()
+    Ok(reqwest::Client::builder()
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(BROWSER_UA)
+        .build()?)
+}
+
+enum Landing {
+    Code(String),
+    Page { status: reqwest::StatusCode, url: reqwest::Url, body: String },
+}
+
+/// Hide the OAuth code (and anything after it) in traced URLs.
+fn redact(url: &str) -> String {
+    match url.find("code=") {
+        Some(i) => format!("{}code=<rejtve>", &url[..i]),
+        None => url.chars().take(160).collect(),
+    }
+}
+
+async fn follow(
+    client: &reqwest::Client,
+    mut res: reqwest::Response,
+    log: &mut (dyn FnMut(String) + Send),
+) -> Result<Landing> {
+    for _ in 0..12 {
+        let status = res.status();
+        log(format!("  ← HTTP {} {}", status.as_u16(), redact(res.url().as_str())));
+        if !status.is_redirection() {
+            let url = res.url().clone();
+            return Ok(Landing::Page { status, url, body: res.text().await.unwrap_or_default() });
         }
-    });
-    Ok(reqwest::Client::builder().cookie_store(true).redirect(policy).user_agent(BROWSER_UA).build()?)
+        let location = res.headers().get("location").and_then(|l| l.to_str().ok()).unwrap_or_default().to_owned();
+        let next = res.url().join(&location)?;
+        log(format!("  → átirányítás: {}", redact(next.as_str())));
+        if next.as_str().starts_with(REDIRECT_URI) {
+            return code_from_redirect(next.as_str())
+                .map(Landing::Code)
+                .ok_or_else(|| anyhow!("átirányítás kód nélkül: {}", redact(next.as_str())));
+        }
+        res = client.get(next).send().await?;
+    }
+    bail!("túl sok átirányítás")
 }
 
 fn html_attr_value(html: &str, name: &str) -> Option<String> {
@@ -176,17 +212,33 @@ pub fn code_from_redirect(url: &str) -> Option<String> {
 
 /// Headless login with username/password.
 pub async fn login(institute_code: &str, username: &str, password: &str) -> Result<Session> {
+    login_traced(institute_code, username, password, &mut |_| {}).await
+}
+
+/// Headless login that reports each step (never the password or tokens) to `log`.
+pub async fn login_traced(
+    institute_code: &str,
+    username: &str,
+    password: &str,
+    log: &mut (dyn FnMut(String) + Send),
+) -> Result<Session> {
     let pkce = Pkce::new();
     let client = login_client()?;
 
-    let page = client.get(&pkce.authorize_url).send().await.context("nem érhető el az idp.e-kreta.hu")?;
-    let login_url = page.url().clone();
-    let html = page.text().await?;
-
+    log("1. bejelentkezési oldal lekérése".into());
+    let res = client.get(&pkce.authorize_url).send().await.context("nem érhető el az idp.e-kreta.hu")?;
+    let Landing::Page { url: login_url, body: html, .. } = follow(&client, res, log).await? else {
+        bail!("váratlan átirányítás a belépés előtt");
+    };
     let token = html_attr_value(&html, "__RequestVerificationToken")
         .ok_or_else(|| anyhow!("nem található a bejelentkezési űrlap (változott a KRÉTA oldala?)"))?;
     let return_url = html_attr_value(&html, "ReturnUrl").unwrap_or_default();
+    log(format!("  űrlap megvan (ReturnUrl {} karakter)", return_url.len()));
 
+    log(format!(
+        "2. adatok elküldése (intézmény: {institute_code}, felhasználó: {} karakter)",
+        username.chars().count()
+    ));
     let form = [
         ("ReturnUrl", return_url.as_str()),
         ("IsTemporaryLogin", "False"),
@@ -204,28 +256,25 @@ pub async fn login(institute_code: &str, username: &str, password: &str) -> Resu
         .form(&form)
         .send()
         .await?;
-
-    let status = res.status();
-    let final_url = res.url().clone();
-    if let Some(code) = redirect_code(&res) {
-        return exchange_code(&code, &pkce.verifier).await;
-    }
-    let body = res.text().await.unwrap_or_default();
-
-    // Some IDP pages continue with a JS/meta redirect instead of a 302: follow
-    // the authorize callback link ourselves.
-    let callback = Regex::new(r#"(/connect/authorize/callback\?[^"'\s<>]+)"#).expect("valid regex");
-    if let Some(m) = callback.captures(&body) {
-        let url = format!("{IDP}{}", html_unescape(&m[1]));
-        let res = client.get(url).send().await?;
-        if let Some(code) = redirect_code(&res) {
-            return exchange_code(&code, &pkce.verifier).await;
-        }
-    }
+    let (status, final_url, body) = match follow(&client, res, log).await? {
+        Landing::Code(code) => return exchange_traced(&code, &pkce.verifier, log).await,
+        Landing::Page { status, url, body } => (status, url, body),
+    };
 
     if let Some(msg) = login_error_text(&body) {
         bail!("{msg}");
     }
+    // Some IDP pages continue with a JS/meta redirect instead of a 302: follow
+    // the authorize callback link ourselves.
+    let callback = Regex::new(r#"(/connect/authorize/callback\?[^"'\s<>]+)"#).expect("valid regex");
+    if let Some(m) = callback.captures(&body) {
+        log("3. az oldal callback-linket tartalmaz, követem".into());
+        let res = client.get(format!("{IDP}{}", html_unescape(&m[1]))).send().await?;
+        if let Landing::Code(code) = follow(&client, res, log).await? {
+            return exchange_traced(&code, &pkce.verifier, log).await;
+        }
+    }
+
     if body.contains("g-recaptcha") || body.contains("data-sitekey") {
         bail!("a KRÉTA captchát kér – használd a böngészős belépést");
     }
@@ -242,10 +291,11 @@ pub async fn login(institute_code: &str, username: &str, password: &str) -> Resu
     )
 }
 
-/// The OAuth code from a response that stopped at the redirect URI.
-fn redirect_code(res: &reqwest::Response) -> Option<String> {
-    let location = res.headers().get("location")?.to_str().ok()?;
-    location.starts_with(REDIRECT_URI).then(|| code_from_redirect(location)).flatten()
+async fn exchange_traced(code: &str, verifier: &str, log: &mut (dyn FnMut(String) + Send)) -> Result<Session> {
+    log("4. kód megvan, token kérése".into());
+    let session = exchange_code(code, verifier).await?;
+    log(format!("  token rendben (intézmény: {})", session.institute_code));
+    Ok(session)
 }
 
 async fn token_request(form: &[(&str, &str)]) -> Result<TokenResponse> {
