@@ -1,6 +1,6 @@
 [package]
 name = "kreta-tui"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Terminal client for the Hungarian e-KRÉTA school system"
 license = "MIT"

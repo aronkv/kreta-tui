@@ -12,7 +12,7 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::api::auth::Session;
+use crate::api::auth::{School, Session};
 
 /// Raw API responses, kept as JSON so the cache survives model changes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -54,6 +54,15 @@ pub fn load_session() -> Option<Session> {
 
 pub fn save_session(s: &Session) -> Result<()> {
     write_private(&data_dir().join("session.json"), &serde_json::to_vec_pretty(s)?)
+}
+
+/// Last school used for a password login, to prefill the form. Kept on logout.
+pub fn load_school() -> Option<School> {
+    serde_json::from_slice(&fs::read(data_dir().join("school.json")).ok()?).ok()
+}
+
+pub fn save_school(s: &School) -> Result<()> {
+    write_private(&data_dir().join("school.json"), &serde_json::to_vec_pretty(s)?)
 }
 
 pub fn load_cache() -> RawData {

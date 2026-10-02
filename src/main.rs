@@ -78,8 +78,10 @@ async fn main() -> anyhow::Result<()> {
                     Some(Event::Resize) => {}
                     Some(Event::Tick) => {
                         app.tick += 1;
+                        app.on_tick();
                         let minute = chrono::Local::now().format("%H:%M").to_string();
-                        let busy = app.loading() || matches!(&app.screen, app::Screen::Login(f) if f.busy);
+                        let busy = app.loading()
+                            || matches!(&app.screen, app::Screen::Login(f) if f.busy || f.browser.is_some());
                         let status_expiring = app.status.as_ref().is_some_and(|s| s.2.elapsed().as_secs() <= 7);
                         if !busy && !status_expiring && last_minute.as_ref() == Some(&minute) {
                             continue;

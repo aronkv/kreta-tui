@@ -1136,7 +1136,7 @@ const LOGO: [&str; 3] = ["╦╔═ ╦═╗ ╔═╗ ╔╦╗ ╔═╗", "�
 
 fn draw_login(f: &mut Frame, app: &App) {
     let Screen::Login(form) = &app.screen else { return };
-    let area = centered(f.area(), 74, if form.browser.is_some() { 23 } else { 24 });
+    let area = centered(f.area(), 74, if form.browser.is_some() { 23 } else { 26 });
     f.render_widget(Clear, area);
     let outer = Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(ACCENT));
     let inner = outer.inner(area);
@@ -1146,7 +1146,13 @@ fn draw_login(f: &mut Frame, app: &App) {
     if form.browser.is_some() {
         constraints.extend([Constraint::Length(8), Constraint::Length(3)]);
     } else {
-        constraints.extend([Constraint::Length(3), Constraint::Length(3), Constraint::Length(3)]);
+        constraints.extend([
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+        ]);
     }
     constraints.extend([Constraint::Length(2), Constraint::Min(1)]);
     let chunks = Layout::vertical(constraints).split(inner);
@@ -1160,25 +1166,26 @@ fn draw_login(f: &mut Frame, app: &App) {
         chunks[2],
     );
 
-    let input = |title: &str, value: String, focused: bool| {
-        Paragraph::new(Line::from(vec![
-            Span::raw(value),
-            Span::styled(if focused { "▏" } else { "" }, Style::new().fg(ACCENT)),
-        ]))
-        .block(
+    let input = |title: Line<'static>, value: Line<'static>, focused: bool| {
+        let mut value = value;
+        if focused {
+            value.spans.push(Span::styled("▏", Style::new().fg(ACCENT)));
+        }
+        Paragraph::new(value).block(
             Block::bordered()
                 .border_type(BorderType::Rounded)
                 .border_style(Style::new().fg(if focused { ACCENT } else { SURFACE }))
-                .title(Line::styled(format!(" {title} "), Style::new().fg(if focused { ACCENT } else { MUTED }))),
+                .title(title.style(Style::new().fg(if focused { ACCENT } else { MUTED }))),
         )
     };
 
+    let mut dropdown_anchor = None;
     let next = if let Some(b) = &form.browser {
         let mut text = vec![Line::styled(" Böngészős belépés", Style::new().fg(ACCENT2).bold())];
         let explain: &[&str] = match b.method {
             Method::Chromium => &[
                 " Megnyílt egy külön böngészőablak a KRÉTA belépéssel.",
-                " Lépj be ott – a program magától észreveszi, és bezárja az ablakot.",
+                " Lépj be ott – utána az ablak magától bezárul, és már bent is vagy.",
                 "",
             ],
             Method::Clipboard => &[
@@ -1192,19 +1199,68 @@ fn draw_login(f: &mut Frame, app: &App) {
         text.push(Line::styled(format!(" {}", truncate(&b.url, inner.width as usize - 2)), Style::new().fg(SURFACE)));
         f.render_widget(Paragraph::new(text), chunks[3]);
         f.render_widget(
-            input("…vagy illeszd be ide az átirányított címet", truncate(&b.input, inner.width as usize - 6), true),
+            input(
+                Line::raw(" …vagy illeszd be ide az átirányított címet "),
+                Line::raw(truncate(&b.input, inner.width as usize - 6)),
+                true,
+            ),
             chunks[4],
         );
         5
     } else {
-        let masked = "•".repeat(form.fields[2].chars().count());
-        f.render_widget(input("Intézmény kód (pl. klik012345001)", form.fields[0].clone(), form.focus == 0), chunks[3]);
+        let focused = form.focus == 0;
+        let button = Paragraph::new(Line::from(" ▶  Belépés böngészővel ").centered().style(if focused {
+            Style::new().fg(Color::Black).bg(ACCENT).bold()
+        } else {
+            Style::new().fg(ACCENT).bold()
+        }))
+        .block(
+            Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(if focused {
+                ACCENT
+            } else {
+                SURFACE
+            })),
+        );
+        f.render_widget(button, centered(chunks[3], 34, 3));
         f.render_widget(
-            input("Felhasználónév (oktatási azonosító)", form.fields[1].clone(), form.focus == 1),
+            Paragraph::new(Line::styled("─── vagy jelszóval ───", Style::new().fg(MUTED)).centered()),
             chunks[4],
         );
-        f.render_widget(input("Jelszó", masked, form.focus == 2), chunks[5]);
-        6
+
+        let query = form.fields[0].trim();
+        let school_title = if form.searching {
+            format!(" Iskola – keresés {} ", SPINNER[app.tick as usize % SPINNER.len()])
+        } else if form.school.is_none()
+            && form.results.is_empty()
+            && query.chars().count() >= 3
+            && form.query_sent == query
+        {
+            " Iskola – nincs találat ".to_owned()
+        } else {
+            " Iskola (OM azonosító vagy név) ".to_owned()
+        };
+        let school_value = match &form.school {
+            Some(s) => Line::from(vec![
+                Span::styled(truncate(&s.name, inner.width as usize - 20), Style::new().fg(GREEN)),
+                Span::styled(format!("  OM {}", s.om), Style::new().fg(MUTED)),
+            ]),
+            None => Line::raw(form.fields[0].clone()),
+        };
+        f.render_widget(input(Line::raw(school_title), school_value, form.focus == 1), chunks[5]);
+        f.render_widget(
+            input(
+                Line::raw(" Felhasználónév (oktatási azonosító) "),
+                Line::raw(form.fields[1].clone()),
+                form.focus == 2,
+            ),
+            chunks[6],
+        );
+        let masked = "•".repeat(form.fields[2].chars().count());
+        f.render_widget(input(Line::raw(" Jelszó "), Line::raw(masked), form.focus == 3), chunks[7]);
+        if form.focus == 1 && form.school.is_none() && !form.results.is_empty() {
+            dropdown_anchor = Some(chunks[5]);
+        }
+        8
     };
 
     let status = if form.busy {
@@ -1222,10 +1278,49 @@ fn draw_login(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(status).wrap(Wrap { trim: true }), chunks[next]);
     let hints: &[(&str, &str)] = if form.browser.is_some() {
         &[("Enter", "beillesztett cím"), ("Esc", "vissza")]
+    } else if form.focus == 0 {
+        &[("Enter", "belépés böngészővel"), ("↓", "jelszavas belépés"), ("Esc", "kilép")]
+    } else if dropdown_anchor.is_some() {
+        &[("↑↓", "iskola"), ("Enter", "kiválaszt"), ("Esc", "bezár")]
     } else {
-        &[("Enter", "tovább"), ("Tab", "mező"), ("Ctrl+B", "belépés böngészővel"), ("Esc", "kilép")]
+        &[("Enter", "tovább"), ("Tab", "mező"), ("Ctrl+B", "böngésző"), ("Esc", "kilép")]
     };
     f.render_widget(Paragraph::new(key_hints(hints)), chunks[next + 1]);
+
+    // School search results, drawn over the fields below the search box.
+    if let Some(anchor) = dropdown_anchor {
+        const VISIBLE: usize = 6;
+        let n = form.results.len();
+        let h = (n.min(VISIBLE) + 2) as u16;
+        let rect = Rect::new(anchor.x, anchor.y + anchor.height - 1, anchor.width, h).intersection(f.area());
+        let first = form.result_idx.saturating_sub(VISIBLE - 1).min(n.saturating_sub(VISIBLE));
+        let lines: Vec<Line> = form
+            .results
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(VISIBLE)
+            .map(|(i, s)| {
+                let selected = i == form.result_idx;
+                let line = Line::from(vec![
+                    Span::styled(if selected { "▌" } else { " " }, Style::new().fg(ACCENT)),
+                    Span::styled(truncate(&s.name, rect.width as usize - 16), Style::new().bold()),
+                    Span::styled(format!("  {}", s.om), Style::new().fg(MUTED)),
+                ]);
+                if selected { line.bg(SURFACE) } else { line }
+            })
+            .collect();
+        f.render_widget(Clear, rect);
+        f.render_widget(
+            Paragraph::new(lines).block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::new().fg(ACCENT))
+                    .title(Line::styled(format!(" {n} találat "), Style::new().fg(MUTED))),
+            ),
+            rect,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1256,5 +1351,34 @@ mod tests {
         }
         app.show_help = true;
         term.draw(|f| draw(f, &mut app)).unwrap();
+    }
+
+    #[test]
+    fn renders_login_with_school_dropdown() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(tx, true);
+        let mut form = App::empty_login();
+        form.focus = 1;
+        form.school = None;
+        form.fields[0] = "Fazekas".into();
+        form.results = (0..8)
+            .map(|i| crate::api::auth::School {
+                code: format!("klik{i}"),
+                name: format!("Fazekas Iskola {i}"),
+                om: format!("03527{i}"),
+            })
+            .collect();
+        form.result_idx = 7;
+        app.screen = Screen::Login(Box::new(form));
+        let mut term = Terminal::new(TestBackend::new(100, 34)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let text: Vec<String> =
+            (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()).collect();
+        let text = text.join("\n");
+        if std::env::var("SHOW").is_ok() {
+            println!("{text}");
+        }
+        assert!(text.contains("Fazekas Iskola 7") && text.contains("8 találat"));
     }
 }

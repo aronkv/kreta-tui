@@ -124,6 +124,12 @@ async fn chromium_login(browser: &Path, url: &str, cancel: &AtomicBool) -> Resul
     }
     let profile = std::env::temp_dir().join(format!("kreta-login-{}", std::process::id()));
     std::fs::create_dir_all(&profile)?;
+    // Mark first-run onboarding as done so no welcome window pops up next to
+    // the login page (Brave Origin shows a native one that can't be closed via DevTools).
+    std::fs::write(
+        profile.join("Local State"),
+        r#"{"browser":{"first_run_finished":true},"brave":{"origin":{"free_tier_accepted":true}}}"#,
+    )?;
     let child = Command::new(browser)
         .arg(format!("--user-data-dir={}", profile.display()))
         .args(["--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check", "--new-window"])

@@ -51,12 +51,13 @@ kreta --logout   # forget the saved session and cache
 
 ### Logging in
 
-There are two ways to log in:
+**Browser login (default):** press `Enter` on *Belépés böngészővel*.
+- With a Chromium-based browser (Chrome, Chromium, Brave, Vivaldi, Edge…), `kreta` opens a separate login window with a throwaway profile. You log in there, the window closes by itself, and you're in.
+- Without one, it opens your default browser and watches the clipboard. After logging in, copy the address of the page you land on (`mobil.e-kreta.hu/…?code=…`), or paste it into the terminal.
 
-- **Password form**: enter your institute code (the subdomain of your e-KRÉTA address, `https://<code>.e-kreta.hu`), your student ID (*oktatási azonosító*), and your password.
-- **Browser login (`Ctrl+B`)**: use this if KRÉTA asks for a captcha, or if you'd rather not type your password into a terminal.
-  - If you have a Chromium-based browser (Chrome, Chromium, Brave, Vivaldi, Edge…), `kreta` opens a separate login window with a throwaway profile, detects the redirect, and closes the window when you're done.
-  - Otherwise it opens your default browser and watches the clipboard. After logging in, copy the address of the page you land on (`mobil.e-kreta.hu/…?code=…`), or paste it into the terminal.
+**Password login:** use the form below the button.
+- Find your school by OM identifier or name. Results appear as you type, and the last school is remembered.
+- Then enter your student ID (*oktatási azonosító*) and password. `Ctrl+B` switches to browser login at any time.
 
 The password is never stored. Only the OAuth tokens are saved, to `~/.local/share/kreta-tui/session.json` (mode 0600). Downloaded data is cached in `~/.cache/kreta-tui/data.json`.
 

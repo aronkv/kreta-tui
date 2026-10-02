@@ -8,7 +8,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::auth::{self, Pkce, Session};
+use crate::api::auth::{self, Pkce, School, Session};
 use crate::api::browser::{self, Method};
 use crate::api::client::KretaClient;
 use crate::api::models::{self, Absence, Exam, Grade, Homework, Lesson, Note, Student};
@@ -25,6 +25,7 @@ pub enum Event {
 pub enum Msg {
     LoggedIn(Result<Session, String>),
     BrowserCode(Result<String, String>),
+    Schools(String, Result<Vec<School>, String>),
     Fetched(Kind, Result<Value, String>),
     Week(NaiveDate, Result<Value, String>),
 }
@@ -69,9 +70,16 @@ impl Tab {
 }
 
 pub struct LoginForm {
-    /// Institute code, username, password.
+    /// School search query, username, password.
     pub fields: [String; 3],
     pub focus: usize,
+    pub school: Option<School>,
+    pub results: Vec<School>,
+    pub result_idx: usize,
+    pub searching: bool,
+    /// Query of the last search sent, and when the query field was last edited.
+    pub query_sent: String,
+    edited_at: Option<Instant>,
     pub browser: Option<BrowserLogin>,
     pub error: Option<String>,
     pub busy: bool,
@@ -136,7 +144,7 @@ impl Data {
 }
 
 pub enum Screen {
-    Login(LoginForm),
+    Login(Box<LoginForm>),
     Main,
 }
 
@@ -182,7 +190,7 @@ impl App {
         } else if let Some(session) = store::load_session() {
             (Screen::Main, store::load_cache(), Some(KretaClient::new(session)))
         } else {
-            (Screen::Login(Self::empty_login()), RawData::default(), None)
+            (Screen::Login(Box::new(Self::empty_login())), RawData::default(), None)
         };
         let mut app = Self {
             screen,
@@ -216,8 +224,46 @@ impl App {
         app
     }
 
-    fn empty_login() -> LoginForm {
-        LoginForm { fields: Default::default(), focus: 0, browser: None, error: None, busy: false }
+    pub fn empty_login() -> LoginForm {
+        let school = store::load_school();
+        LoginForm {
+            fields: [school.as_ref().map(|s| s.name.clone()).unwrap_or_default(), String::new(), String::new()],
+            focus: 0,
+            query_sent: school.as_ref().map(|s| s.name.clone()).unwrap_or_default(),
+            school,
+            results: Vec::new(),
+            result_idx: 0,
+            searching: false,
+            edited_at: None,
+            browser: None,
+            error: None,
+            busy: false,
+        }
+    }
+
+    /// Debounced school search while typing in the login form.
+    pub fn on_tick(&mut self) {
+        let Screen::Login(form) = &mut self.screen else { return };
+        let Some(at) = form.edited_at else { return };
+        if at.elapsed().as_millis() < 350 {
+            return;
+        }
+        form.edited_at = None;
+        let query = form.fields[0].trim().to_owned();
+        if query.chars().count() < 3 {
+            form.results.clear();
+            form.searching = false;
+            return;
+        }
+        if query == form.query_sent {
+            return;
+        }
+        form.query_sent = query.clone();
+        form.searching = true;
+        self.spawn(async move {
+            let res = auth::search_schools(&query).await.map_err(|e| format!("{e:#}"));
+            Msg::Schools(query, res)
+        });
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>, error: bool) {
@@ -324,6 +370,26 @@ impl App {
                 }
                 return;
             }
+            Msg::Schools(query, res) => {
+                self.pending = self.pending.saturating_sub(1);
+                let Screen::Login(form) = &mut self.screen else { return };
+                if form.fields[0].trim() != query {
+                    return; // stale
+                }
+                form.searching = false;
+                match res {
+                    Ok(list) => {
+                        form.result_idx = 0;
+                        if list.len() == 1 {
+                            Self::pick_school(form, list[0].clone());
+                        } else {
+                            form.results = list;
+                        }
+                    }
+                    Err(e) => form.error = Some(format!("Iskolakeresés: {e}")),
+                }
+                return;
+            }
             Msg::Fetched(kind, res) => match res {
                 Ok(v) => {
                     let slot = match kind {
@@ -414,21 +480,8 @@ impl App {
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && key.code == KeyCode::Char('b') {
-            form.error = None;
             if form.browser.take().is_none() {
-                let pkce = Pkce::new();
-                let cancel = Arc::new(AtomicBool::new(false));
-                let (url, watcher_cancel) = (pkce.authorize_url.clone(), cancel.clone());
-                form.browser = Some(BrowserLogin {
-                    verifier: pkce.verifier,
-                    url: pkce.authorize_url,
-                    input: String::new(),
-                    method: browser::method(),
-                    cancel,
-                });
-                self.spawn(async move {
-                    Msg::BrowserCode(browser::login(url, watcher_cancel).await.map_err(|e| format!("{e:#}")))
-                });
+                self.start_browser_login();
             }
             return;
         }
@@ -457,22 +510,57 @@ impl App {
             }
             return;
         }
+
+        // Focus 0 is the "log in with browser" button, 1..=3 the password form fields.
+        let field = form.focus.checked_sub(1);
+        let dropdown = form.focus == 1 && form.school.is_none() && !form.results.is_empty();
+        if form.focus == 1 && matches!(key.code, KeyCode::Backspace | KeyCode::Char(_)) {
+            form.school = None;
+            form.results.clear();
+            form.edited_at = Some(Instant::now());
+        }
         match key.code {
+            KeyCode::Esc if dropdown => form.results.clear(),
             KeyCode::Esc => self.quit = true,
-            KeyCode::Tab | KeyCode::Down => form.focus = (form.focus + 1) % 3,
-            KeyCode::BackTab | KeyCode::Up => form.focus = (form.focus + 2) % 3,
-            KeyCode::Backspace => {
-                form.fields[form.focus].pop();
+            KeyCode::Down if dropdown => form.result_idx = (form.result_idx + 1).min(form.results.len() - 1),
+            KeyCode::Up if dropdown => form.result_idx = form.result_idx.saturating_sub(1),
+            KeyCode::Tab | KeyCode::Enter if dropdown => {
+                let s = form.results[form.result_idx].clone();
+                Self::pick_school(form, s);
+                form.focus = 2;
             }
-            KeyCode::Char('u') if ctrl => form.fields[form.focus].clear(),
-            KeyCode::Char(c) if !ctrl => form.fields[form.focus].push(c),
-            KeyCode::Enter if form.focus < 2 => form.focus += 1,
+            KeyCode::Enter if form.focus == 0 => self.start_browser_login(),
+            KeyCode::Tab | KeyCode::Down => form.focus = (form.focus + 1) % 4,
+            KeyCode::BackTab | KeyCode::Up => form.focus = (form.focus + 3) % 4,
+            KeyCode::Backspace => {
+                if let Some(i) = field {
+                    form.fields[i].pop();
+                }
+            }
+            KeyCode::Char('u') if ctrl => {
+                if let Some(i) = field {
+                    form.fields[i].clear();
+                }
+            }
+            KeyCode::Char(c) if !ctrl => {
+                if let Some(i) = field {
+                    form.fields[i].push(c);
+                }
+            }
+            KeyCode::Enter if form.focus < 3 => form.focus += 1,
             KeyCode::Enter => {
-                let [inst, user, pass] = form.fields.clone().map(|s| s.trim().to_owned());
-                if inst.is_empty() || user.is_empty() || pass.is_empty() {
+                let [_, user, pass] = form.fields.clone().map(|s| s.trim().to_owned());
+                let Some(school) = form.school.clone() else {
+                    form.error = Some("Válaszd ki az iskolát (OM azonosító vagy név alapján)".into());
+                    form.focus = 1;
+                    return;
+                };
+                if user.is_empty() || pass.is_empty() {
                     form.error = Some("Minden mezőt ki kell tölteni".into());
                     return;
                 }
+                let _ = store::save_school(&school);
+                let inst = school.code;
                 form.busy = true;
                 form.error = None;
                 self.spawn(async move {
@@ -481,6 +569,33 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Open the login page in a browser and wait for the OAuth code in the background.
+    fn start_browser_login(&mut self) {
+        let Screen::Login(form) = &mut self.screen else { return };
+        let pkce = Pkce::new();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (url, watcher_cancel) = (pkce.authorize_url.clone(), cancel.clone());
+        form.error = None;
+        form.browser = Some(BrowserLogin {
+            verifier: pkce.verifier,
+            url: pkce.authorize_url,
+            input: String::new(),
+            method: browser::method(),
+            cancel,
+        });
+        self.spawn(
+            async move { Msg::BrowserCode(browser::login(url, watcher_cancel).await.map_err(|e| format!("{e:#}"))) },
+        );
+    }
+
+    fn pick_school(form: &mut LoginForm, school: School) {
+        form.fields[0] = school.name.clone();
+        form.query_sent = school.name.clone();
+        form.results.clear();
+        form.school = Some(school);
+        form.error = None;
     }
 
     fn logout(&mut self) {
@@ -494,7 +609,7 @@ impl App {
         store::clear();
         self.raw = RawData::default();
         self.data = Data::default();
-        self.screen = Screen::Login(Self::empty_login());
+        self.screen = Screen::Login(Box::new(Self::empty_login()));
     }
 
     fn grades_key(&mut self, key: KeyEvent) {

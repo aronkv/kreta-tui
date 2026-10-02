@@ -24,6 +24,53 @@ pub const BROWSER_UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac O
     AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
 const TOKEN_UA: &str = "eKretaStudent/264745 CFNetwork/1494.0.7 Darwin/23.4.0";
 
+/// A school as returned by the IDP's institute search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct School {
+    /// Institute code used for login and the API subdomain, e.g. `klik035046001`.
+    pub code: String,
+    pub name: String,
+    /// OM identifier, sometimes with a site suffix (`203058/002`).
+    pub om: String,
+}
+
+/// Search schools by OM identifier, name fragment or institute code (min. 3 chars),
+/// using the same endpoint as the IDP login page's autocomplete.
+pub async fn search_schools(query: &str) -> Result<Vec<School>> {
+    let html = reqwest::Client::builder()
+        .user_agent(BROWSER_UA)
+        .build()?
+        .get(format!("{IDP}/logininstituteselector?searchValue={}", urlencoding::encode(query)))
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    Ok(parse_schools(&html))
+}
+
+fn parse_schools(html: &str) -> Vec<School> {
+    let re = Regex::new(r#"data-val="([^"]*)"[^>]*>([^<]*)</a>"#).expect("valid regex");
+    re.captures_iter(html)
+        .filter_map(|c| {
+            let code = html_unescape(&c[1]);
+            if code.is_empty() {
+                return None;
+            }
+            let text = html_unescape(c[2].trim());
+            // "Name (code - om)"
+            let (name, om) = match text.rfind(" (") {
+                Some(i) if text.ends_with(')') => {
+                    let inner = &text[i + 2..text.len() - 1];
+                    (text[..i].to_owned(), inner.rsplit(" - ").next().unwrap_or_default().to_owned())
+                }
+                _ => (text.clone(), String::new()),
+            };
+            Some(School { code, name, om })
+        })
+        .collect()
+}
+
 /// Persisted login state. Only tokens are stored, never the password.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -277,6 +324,20 @@ mod tests {
             <input name="__RequestVerificationToken" type="hidden" value="tok123" />"#;
         assert_eq!(html_attr_value(html, "ReturnUrl").as_deref(), Some("/connect?a=1&b=2"));
         assert_eq!(html_attr_value(html, "__RequestVerificationToken").as_deref(), Some("tok123"));
+    }
+
+    #[test]
+    fn parses_school_search() {
+        let html = r##"<li><a href="#" class="dropdown-item" data-val="klik035046001">Zugl&#xF3;i Iskola (klik035046001 - 035046)</a></li>
+            <li><a href="#" class="dropdown-item" data-val="bmszc-blathy">Bl&#xE1;thy (bmszc-blathy - 203058/002)</a></li>
+            <li><a href="#" class="dropdown-item disabled" data-val="">Nincs tal&#xE1;lat</a></li>"##;
+        let s = parse_schools(html);
+        assert_eq!(s.len(), 2);
+        assert_eq!(
+            (s[0].code.as_str(), s[0].name.as_str(), s[0].om.as_str()),
+            ("klik035046001", "Zuglói Iskola", "035046")
+        );
+        assert_eq!(s[1].om, "203058/002");
     }
 
     #[test]
