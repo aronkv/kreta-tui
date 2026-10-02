@@ -515,7 +515,11 @@ impl App {
         let field = form.focus.checked_sub(1);
         let dropdown = form.focus == 1 && form.school.is_none() && !form.results.is_empty();
         if form.focus == 1 && matches!(key.code, KeyCode::Backspace | KeyCode::Char(_)) {
-            form.school = None;
+            // A picked school shows its full name; editing it starts a fresh search.
+            if form.school.take().is_some() {
+                form.fields[0].clear();
+                form.query_sent.clear();
+            }
             form.results.clear();
             form.edited_at = Some(Instant::now());
         }

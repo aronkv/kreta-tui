@@ -205,19 +205,47 @@ pub async fn login(institute_code: &str, username: &str, password: &str) -> Resu
         .send()
         .await?;
 
-    let location = res.headers().get("location").and_then(|l| l.to_str().ok()).map(str::to_owned);
-    if let Some(code) = location.as_deref().and_then(code_from_redirect) {
+    let status = res.status();
+    let final_url = res.url().clone();
+    if let Some(code) = redirect_code(&res) {
         return exchange_code(&code, &pkce.verifier).await;
     }
-
     let body = res.text().await.unwrap_or_default();
+
+    // Some IDP pages continue with a JS/meta redirect instead of a 302: follow
+    // the authorize callback link ourselves.
+    let callback = Regex::new(r#"(/connect/authorize/callback\?[^"'\s<>]+)"#).expect("valid regex");
+    if let Some(m) = callback.captures(&body) {
+        let url = format!("{IDP}{}", html_unescape(&m[1]));
+        let res = client.get(url).send().await?;
+        if let Some(code) = redirect_code(&res) {
+            return exchange_code(&code, &pkce.verifier).await;
+        }
+    }
+
     if let Some(msg) = login_error_text(&body) {
         bail!("{msg}");
     }
     if body.contains("g-recaptcha") || body.contains("data-sitekey") {
-        bail!("a KRÉTA captchát kér – használd a böngészős belépést (Ctrl+B)");
+        bail!("a KRÉTA captchát kér – használd a böngészős belépést");
     }
-    bail!("sikertelen bejelentkezés – ellenőrizd az adatokat, vagy próbáld böngészővel (Ctrl+B)")
+    crate::store::save_login_debug(&body);
+    let title = Regex::new(r"(?s)<title>(.*?)</title>")
+        .ok()
+        .and_then(|r| r.captures(&body).map(|c| html_unescape(c[1].trim())))
+        .unwrap_or_default();
+    bail!(
+        "sikertelen bejelentkezés (HTTP {}, {}{}) – próbáld böngészővel. Részletek: ~/.cache/kreta-tui/login-debug.html",
+        status.as_u16(),
+        final_url.path(),
+        if title.is_empty() { String::new() } else { format!(", „{title}”") }
+    )
+}
+
+/// The OAuth code from a response that stopped at the redirect URI.
+fn redirect_code(res: &reqwest::Response) -> Option<String> {
+    let location = res.headers().get("location")?.to_str().ok()?;
+    location.starts_with(REDIRECT_URI).then(|| code_from_redirect(location)).flatten()
 }
 
 async fn token_request(form: &[(&str, &str)]) -> Result<TokenResponse> {

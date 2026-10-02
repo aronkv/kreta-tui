@@ -73,6 +73,11 @@ pub fn save_cache(data: &RawData) -> Result<()> {
     write_private(&cache_dir().join("data.json"), &serde_json::to_vec(data)?)
 }
 
+/// Keep the page a failed headless login ended on, for troubleshooting.
+pub fn save_login_debug(html: &str) {
+    let _ = write_private(&cache_dir().join("login-debug.html"), html.as_bytes());
+}
+
 pub fn clear() {
     let _ = fs::remove_file(data_dir().join("session.json"));
     let _ = fs::remove_file(cache_dir().join("data.json"));
