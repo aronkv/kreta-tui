@@ -152,13 +152,9 @@ async fn chromium_login(browser: &Path, url: &str, cancel: &AtomicBool) -> Resul
     let http = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build()?;
 
     let opened: Target = http.put(format!("{base}/json/new?{}", urlencoding::encode(url))).send().await?.json().await?;
-    // Close the startup/blank tabs so only the login page is visible.
-    let targets: Vec<Target> = http.get(format!("{base}/json/list")).send().await?.json().await?;
-    for t in targets.iter().filter(|t| t.kind == "page" && t.id != opened.id) {
-        let _ = http.get(format!("{base}/json/close/{}", t.id)).send().await;
-    }
 
     let started = std::time::Instant::now();
+    let mut closed = std::collections::HashSet::new();
     loop {
         if cancel.load(Ordering::Relaxed) {
             bail!("megszakítva");
@@ -171,13 +167,27 @@ async fn chromium_login(browser: &Path, url: &str, cancel: &AtomicBool) -> Resul
         }
         if let Ok(res) = http.get(format!("{base}/json/list")).send().await
             && let Ok(targets) = res.json::<Vec<Target>>().await
-            && let Some(code) =
-                targets.iter().filter(|t| t.url.starts_with(REDIRECT_URI)).find_map(|t| code_from_redirect(&t.url))
         {
-            return Ok(code);
+            if let Some(code) =
+                targets.iter().filter(|t| t.url.starts_with(REDIRECT_URI)).find_map(|t| code_from_redirect(&t.url))
+            {
+                return Ok(code);
+            }
+            // Startup/welcome windows can appear well after launch (only in a
+            // visible browser), so keep closing internal pages for the whole login.
+            for t in targets.iter().filter(|t| t.kind == "page" && t.id != opened.id && is_internal(&t.url)) {
+                if closed.insert(t.id.clone()) {
+                    let _ = http.get(format!("{base}/json/close/{}", t.id)).send().await;
+                }
+            }
         }
         tokio::time::sleep(POLL).await;
     }
+}
+
+/// Browser-internal pages (startup, new tab, welcome) as opposed to real sites.
+fn is_internal(url: &str) -> bool {
+    url.is_empty() || url.starts_with("about:") || !url.starts_with("http") && url.contains("://")
 }
 
 fn read_clipboard() -> Option<String> {
