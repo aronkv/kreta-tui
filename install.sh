@@ -1,10 +1,10 @@
 #!/bin/sh
 # Install (or uninstall) the `kreta` terminal client for e-KRÉTA.
-#   curl -fsSL https://raw.githubusercontent.com/DarkAaronfox/kreta-tui/main/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/DarkAaronfox/kreta-tui/main/install.sh | sh -s -- --uninstall
+#   curl -fsSL https://raw.githubusercontent.com/aronkv/kreta-tui/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/aronkv/kreta-tui/main/install.sh | sh -s -- --uninstall
 set -eu
 
-REPO="DarkAaronfox/kreta-tui"
+REPO="aronkv/kreta-tui"
 BIN_DIR="${KRETA_INSTALL_DIR:-$HOME/.local/bin}"
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }

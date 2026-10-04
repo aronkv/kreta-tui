@@ -24,7 +24,7 @@ On startup it renders instantly from a local cache, then refreshes in the backgr
 Linux (x86_64 / aarch64):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/DarkAaronfox/kreta-tui/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/aronkv/kreta-tui/main/install.sh | sh
 ```
 
 This installs the `kreta` binary to `~/.local/bin` (override with `KRETA_INSTALL_DIR`).
@@ -32,13 +32,13 @@ This installs the `kreta` binary to `~/.local/bin` (override with `KRETA_INSTALL
 To build from source instead (Rust 1.88+):
 
 ```sh
-cargo install --git https://github.com/DarkAaronfox/kreta-tui
+cargo install --git https://github.com/aronkv/kreta-tui
 ```
 
 Uninstall:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/DarkAaronfox/kreta-tui/main/install.sh | sh -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/aronkv/kreta-tui/main/install.sh | sh -s -- --uninstall
 ```
 
 ## Usage

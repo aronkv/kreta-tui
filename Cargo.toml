@@ -4,7 +4,7 @@ version = "0.1.2"
 edition = "2024"
 description = "Terminal client for the Hungarian e-KRÉTA school system"
 license = "MIT"
-repository = "https://github.com/DarkAaronfox/kreta-tui"
+repository = "https://github.com/aronkv/kreta-tui"
 
 [[bin]]
 name = "kreta"
